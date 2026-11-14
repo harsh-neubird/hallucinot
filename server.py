@@ -1171,27 +1171,55 @@ def team_evidence(slug, k=10):
     return "\n".join(f"- {c['title']}: {c['text'][:350]}" for c in chunks[:k])
 
 
+CRITERION_TERMS = {
+    "track": "track multi-agent agents swarm negotiate wildcard apex benchmark frontier",
+    "drex": "Drex decision decisions System1 classify verdict router",
+    "intern": "Intern Slack harness agent hand-off",
+    "ndi": "NDI Nace Document Intelligence Perception parse parsing PDF OCR documents",
+    "partners": "Adobe Express Firefly Photoshop DeepInfra Keenable partner",
+    "evidence": "benchmark results accuracy latency cost measured test eval faster cheaper",
+    "credibility": "",
+}
+
+
+def criterion_evidence(slug, key, k=6):
+    """The sections of a team's own materials that are relevant to one rubric criterion (plus its summary)."""
+    I = INDEXES.get(slug)
+    if not I:
+        return ""
+    picked = [c for c in I["chunks"] if any(w in (c["title"] + " " + c["source"]).lower() for w in ("submission", "summary", "description"))][:2]
+    if CRITERION_TERMS.get(key):
+        for c in search(CRITERION_TERMS[key], k=k, ws=slug):
+            if c not in picked:
+                picked.append(c)
+    if len(picked) < 3:
+        picked += [c for c in I["chunks"][:3] if c not in picked]
+    return "\n".join(f"- {c['title']}: {c['text'][:400]}" for c in picked[:k + 2])
+
+
 def score_team(t):
     sc = JUDGE["scores"].get(t["slug"], {})
     live = (f"Live claims checked: {sc.get('claims', 0)}; backed by their materials: {sc.get('agree', 0)}; "
             f"contradicted their materials: {sc.get('contradict', 0)}; not found in their materials: {sc.get('no_source', 0)}.")
-    state = {"team": t["name"], "project_summary": t.get("oneliner", ""), "public_repo": t.get("repo") or "none given",
-             "materials": team_evidence(t["slug"]), "live_demo": live}
-    qs = {key: {"type": "score", "criteria": LEVELS, "instructions": f"{q} Judge only from the evidence given; if there is no evidence, answer none."}
-          for key, _, q in RUBRIC}
-    r = drex(state, qs)
-    out = {}
-    for key, label, _ in RUBRIC:
+    def one(item):
+        key, label, q = item
+        state = {"team": t["name"], "project_summary": t.get("oneliner", ""), "public_repo": t.get("repo") or "none given",
+                 "relevant_materials": criterion_evidence(t["slug"], key), "live_demo": live}
+        r = drex(state, {key: {"type": "score", "criteria": LEVELS,
+                               "instructions": f"{q} Judge only from the evidence given; if there is no evidence, answer none."}})
         a = r["answers"][key]
         val = a.get("score")
         if isinstance(val, str):
             val = LEVELS.index(val) if val in LEVELS else 0
-        out[key] = {"label": label, "score": round(float(val or 0), 2), "confidence": round(a.get("confidence", 0), 2)}
+        return key, {"label": label, "score": round(float(val or 0), 2), "confidence": round(a.get("confidence", 0), 2)}, r["_ms"]
+    with concurrent.futures.ThreadPoolExecutor(7) as ex:
+        res = list(ex.map(one, RUBRIC))
+    out = {k: v for k, v, _ in res}
     if not sc.get("claims"):
         out["credibility"]["score"] = None  # no live demo heard yet: don't count it
     vals = [v["score"] for v in out.values() if v["score"] is not None]
     total = round(100 * sum(vals) / (4 * len(vals)), 1) if vals else 0
-    return {"team": t["name"], "slug": t["slug"], "total": total, "criteria": out, "ms": r["_ms"]}
+    return {"team": t["name"], "slug": t["slug"], "total": total, "criteria": out, "ms": max(m for _, _, m in res)}
 
 
 def rank_teams():
