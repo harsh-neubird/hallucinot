@@ -280,7 +280,7 @@ async function judge(text){
     const c = r.check;
     const el = document.createElement('div');
     if (!c || c.status === 'not_claim') { el.className = 'quiet'; el.textContent = `· ${text.slice(0,90)}`; }
-    else { el.className = 'claim ' + c.status; el.innerHTML = `<div class="st">${LBL[c.status]}</div><div>“${esc(text)}”</div>${c.doc?`<div class="muted">${c.status==='contradict'?'Their materials say: ':'Source: '}${esc(c.doc.title)}${c.fix?` — “${esc(c.fix)}”`:''}</div>`:''}`; }
+    else { el.className = 'claim ' + c.status; el.innerHTML = `<div class="st">${LBL[c.status]}</div><div>“${esc(text)}”</div>${c.doc?`<div class="muted">${c.status==='contradict'?'Their materials say: ':'Source: '}${esc(c.doc.title.replace(/[*#`]/g,'').slice(0,80))}${c.fix?` — “${esc(c.fix.replace(/[*#`]/g,'').slice(0,200))}${c.fix.length>200?'…':''}”`:''}</div>`:''}`; }
     feed.prepend(el); refresh();
   } catch(e) { const q = document.createElement('div'); q.className = 'quiet'; q.textContent = '⚠️ ' + e.message; $('feed').prepend(q); }
 }

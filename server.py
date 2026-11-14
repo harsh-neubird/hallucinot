@@ -572,7 +572,7 @@ def normalize_spoken(t):
 
 # Event product names speech engines don't know. Corrected only in "the model" contexts, so ordinary words survive
 # ("two tracks", "the Swarm track" are left alone).
-SOUNDALIKE = r"(?:tracks?|t-?rex|treks?|dreks?|drecks?|drax|drakes?|rex)"
+SOUNDALIKE = r"(?:tracks?|t-?rex|treks?|dreks?|drecks?|drax|drakes?|rex|drugs?|dregs?|drags?|drew|direx|dr\.?\s?ex)"
 MODEL_BEFORE = r"(?:by|with|using|uses|use|used|from|of|called|via|run|runs|powered by|decided by)"
 MODEL_AFTER = r"(?:decides?|decided|makes?|made|matched|matches|scores?|scored|picks?|picked|is|was|does|did|answers?|returns?|model|api|calls?|router|agents?|decision)"
 
@@ -617,6 +617,27 @@ def vocab_for(ws):
             caps.update(re.findall(r"\b(?:[A-Z][a-z]*[A-Z0-9][A-Za-z0-9]*|[A-Z][a-z]{2,}|[A-Z]{2,6})\b", c["title"] + " " + c["text"]))
         terms.update(w for w, k in caps.items() if k >= 2 and not english(w))
     return sorted(terms)
+
+
+SUBJECT_VERBS = r"(?:is|was|uses|used|runs|has|does|supports|checks|makes|works|lets|reads|scores|catches|listens)"
+
+
+def fix_names_as_subject(text):
+    """Team/project names misheard as real words ("hallucinating is written in Rust"): replace only in subject position."""
+    import difflib
+    names = set()
+    for t in JUDGE["teams"]:
+        for n in [re.sub(r"^team\s+", "", t["name"], flags=re.I), (t.get("oneliner") or "").split(":")[0]]:
+            n = n.strip()
+            if 4 < len(n) < 30 and " " not in n:
+                names.add(n)
+    def fix(m):
+        w = m.group(2)
+        for n in names:
+            if w.lower() != n.lower() and w[:5].lower() == n[:5].lower() and difflib.SequenceMatcher(None, w.lower(), n.lower()).ratio() >= 0.7:
+                return m.group(1) + n + m.group(3)
+        return m.group(0)
+    return re.sub(r"(^|[.!?]\s+|\b(?:and|but|so|team)\s+)([A-Za-z]{5,})(\s+" + SUBJECT_VERBS + r"\b)", fix, text, flags=re.I)
 
 
 def fix_terms(text, ws):
@@ -1188,7 +1209,7 @@ def rank_teams():
 def judge_analyze(text, override=None):
     t0 = time.time()
     text = normalize_spoken(re.sub(r"^[A-Z][a-z]{1,15}:\s*", "", text.strip()))
-    text = fix_terms(text, JUDGE["current"] or "")
+    text = fix_names_as_subject(fix_terms(text, JUDGE["current"] or ""))
     teams = JUDGE["teams"]
     if not teams:
         raise RuntimeError("Import the teams first")
