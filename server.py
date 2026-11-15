@@ -225,6 +225,24 @@ VERDICT = {"type": "choice",
                         "unclear": "The source does not say either way"}}
 
 
+# Common sense: when the documents say nothing, Drex judges the sentence from general knowledge.
+# Only very confident verdicts are shown, and documents always take priority.
+COMMON = {"type": "choice", "instructions":
+          "Judge only the latest statement, using general knowledge alone (math, science, geography, history, well-known public facts). "
+          "Anything about a specific company, customer, person, plan or private situation is unknown.",
+          "criteria": {"true": "A general-knowledge fact that is clearly true",
+                       "false": "A general-knowledge fact that is clearly false",
+                       "unknown": "Not a general-knowledge fact: an opinion, small talk, something private or company-specific, or impossible to judge"}}
+COMMON_MIN = float(os.environ.get("HALLUCINOT_COMMON_MIN", 0.9))
+
+
+def common_verdict(ans):
+    """Map Drex's common-sense answer to a status, or None when it is not confident enough."""
+    if not ans or ans.get("choice") not in ("true", "false") or ans.get("confidence", 0) < COMMON_MIN:
+        return None
+    return ("common_" + ans["choice"], round(ans.get("confidence", 0), 2))
+
+
 def analyze(text, mode="speech", previous="", ws="company"):
     t0 = time.time()
     text = text.strip()
@@ -329,21 +347,33 @@ def check_sentence(sentence, ws):
         seen = {c["id"] for c in cands}
         cands = cands[:10] + [c for c in core + intro if c["id"] not in seen]
     res = {"sentence": sentence, "status": "not_claim", "drex_ms": []}
-    if not cands:
+    use_common = not ws.startswith("team:")  # judge mode scores teams on their own materials only
+
+    def no_source(common_ans=None):
         res["status"] = "no_source"
+        if use_common:
+            if common_ans is None:
+                rc = drex({"statement": sentence}, {"common": COMMON})
+                res["drex_ms"].append(rc["_ms"]); common_ans = rc["answers"]["common"]
+            cv = common_verdict(common_ans)
+            if cv:
+                res["status"], res["conf"] = cv
+        res["ms"] = round((time.time() - t0) * 1000)
         return res
+    if not cands:
+        return no_source()
     crit = {c["id"]: cand_label(c) for c in cands}
     crit["none"] = "None of these documents is about it"
     r1 = drex({"sentence": sentence},
               {"claim": {"type": "noul", "instructions": "Does this sentence state a checkable fact (a number, date, name, property or cause), rather than a title, opinion, greeting or instruction?"},
                "doc": {"type": "choice", "instructions": "Which document covers the same topic as the sentence, even if it disagrees with it? Pick none only if no document is on that topic.",
-                       "criteria": crit}})
+                       "criteria": crit},
+               **({"common": COMMON} if use_common else {})})
     a = r1["answers"]; res["drex_ms"].append(r1["_ms"])
     if a["claim"]["noul"] < 0.5:
         return res
     if a["doc"]["choice"] == "none" or a["doc"].get("confidence", 0) < 0.25:
-        res["status"] = "no_source"
-        return res
+        return no_source(a.get("common"))
     # a sentence can make several claims that live in different docs: check the top 2 picks
     probs = a["doc"].get("probabilities") or {a["doc"]["choice"]: 1.0}
     picks = [k for k, p in sorted(probs.items(), key=lambda kv: -kv[1]) if k != "none" and p >= 0.1][:3] or [a["doc"]["choice"]]
@@ -355,8 +385,9 @@ def check_sentence(sentence, ws):
         verdicts.append((v["choice"], v.get("confidence", 0), doc))
     best = (next((x for x in verdicts if x[0] == "contradict"), None)
             or next((x for x in verdicts if x[0] == "agree"), None) or verdicts[0])
-    res.update(status={"agree": "agree", "contradict": "contradict"}.get(best[0], "no_source"),
-               conf=round(best[1], 2), doc=best[2], cite=citation(best[2]))
+    if best[0] not in ("agree", "contradict"):
+        return no_source(a.get("common"))  # the closest document neither confirms nor contradicts it
+    res.update(status=best[0], conf=round(best[1], 2), doc=best[2], cite=citation(best[2]))
     if res["status"] == "contradict":
         res["fix"], ms = pick_fix(sentence, best[2]); res["drex_ms"] += ms
     res["ms"] = round((time.time() - t0) * 1000)
@@ -705,6 +736,7 @@ def analyze_live(text, previous="", ws="company", llm_mode="drex", alternatives=
             qs[a["id"]] = {"type": "noul", "instructions": a["rule"]}
     for a in customs:
         qs[a["id"]] = {"type": "noul", "instructions": a["rule"]}
+    qs["common"] = COMMON
     qs["draft_request"] = {"type": "noul", "instructions":
         "Is the speaker explicitly asking for something to be written, drafted, summarized or explained in words?"}
     if cands:
@@ -760,6 +792,10 @@ def analyze_live(text, previous="", ws="company", llm_mode="drex", alternatives=
     elif doc_ok and kind == "question":
         doc = next(c for c in cands if c["id"] == a["doc"]["choice"])
         out.update(status="context", doc=doc, conf=round(a["doc"].get("confidence", 0), 2), cite=citation(doc))
+    if not out.get("status") and kind != "question" and not decision:
+        cv = common_verdict(a.get("common"))  # nothing in the documents: fall back to general knowledge
+        if cv:
+            out["status"], out["conf"] = cv
 
     hits = []
     if "rules" in res:
@@ -835,7 +871,8 @@ def analyze_live(text, previous="", ws="company", llm_mode="drex", alternatives=
                         "fix": out.get("fix"), "source": (out.get("doc") or {}).get("title"),
                         "older": (out.get("older") or {}).get("title"),
                         "hits": [{"name": h["name"], "type": h["type"], "detail": h.get("detail")} for h in hits]})
-    out["show"] = bool(hits) or out.get("status") in ("contradict", "outdated", "agree", "agree_new", "context", "learned_update")
+    out["show"] = bool(hits) or out.get("status") in ("contradict", "outdated", "agree", "agree_new", "context", "learned_update",
+                                                      "common_true", "common_false")
     out["total_ms"] = round((time.time() - t0) * 1000)
     st["total_ms"] += out["total_ms"]
     return out

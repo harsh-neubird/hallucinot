@@ -85,6 +85,8 @@ textarea{width:100%;min-height:150px;border:0;outline:0;resize:vertical;backgrou
 .claim.agree{border-left-color:var(--green)}
 .claim.no_source{border-left-color:var(--amber)}
 .claim.not_claim{opacity:.55;padding:6px 12px;font-size:13px}
+.claim.common_false{border-left-color:var(--red)}.claim.common_true{border-left-color:var(--green)}
+.claim.common_false .st{color:var(--red)}.claim.common_true .st{color:var(--green)}
 .claim .st{font-weight:700;font-size:13px}
 .claim.contradict .st{color:var(--red)}.claim.agree .st{color:var(--green)}.claim.no_source .st{color:var(--amber)}.claim.not_claim .st{color:var(--muted)}
 .claim .s{margin:3px 0}
@@ -372,6 +374,9 @@ function render(r){
   if (st === 'context' || st === 'page') { chips.push(`<span class="chip2 b">${st==='page'?'📎 related':'💡 answered'}</span>`); bump('b','answered');
     why.push(r.written ? `✍️ ${esc(r.written.text)}` : `💡 ${esc(firstSentence(d && d.text))}`); }
   if (st === 'learned_update') { chips.push('<span class="chip2 g">🧠 new decision</span>'); bump('g','verified'); }
+  if (st === 'common_false') { chips.push('<span class="chip2 r">🧠 common sense: wrong</span>'); bump('r','wrong');
+    why.push('🧠 Not in your documents, but false by general knowledge.'); }
+  if (st === 'common_true') { chips.push('<span class="chip2 g">🧠 common sense: right</span>'); bump('g','verified'); }
   for (const h of hits) {
     if (h.type === 'flag') { chips.push(`<span class="chip2 o">${h.icon} ${esc(h.name)}</span>`); bump('o','flag'); why.push(`${h.icon} ${esc(h.detail||'')}`); }
     else if (h.type === 'log') { chips.push('<span class="chip2 b">📝 to-do</span>'); bump('b','todo'); }
@@ -519,7 +524,7 @@ document.querySelectorAll('[data-sample]').forEach(a => a.addEventListener('clic
   wsSel.value = ws; showKb(); document.getElementById('doctext').value = text;
 }));
 
-const LABEL = {contradict:'🦖 Hallucination', agree:'✅ Checks out', no_source:'🟡 No source — add a citation', not_claim:'· not a factual claim'};
+const LABEL = {contradict:'🦖 Hallucination', agree:'✅ Checks out', no_source:'🟡 No source — add a citation', not_claim:'· not a factual claim', common_false:'🧠 Common sense: false (not in your documents)', common_true:'🧠 Common sense: true (not in your documents)'};
 async function checkDoc(){
   const text = document.getElementById('doctext').value.trim(); if(!text) return;
   const sum = document.getElementById('docsum'), res = document.getElementById('docres'), btn = document.getElementById('docgo');
@@ -529,11 +534,11 @@ async function checkDoc(){
     if(r.error) throw new Error(r.error);
     const c = r.counts || {};
     sum.innerHTML = `<span class="chip r">🦖 ${c.contradict||0} hallucination${(c.contradict||0)==1?'':'s'}</span>
-      <span class="chip g">✅ ${c.agree||0} checked out</span><span class="chip y">🟡 ${c.no_source||0} no source</span>
+      <span class="chip g">✅ ${c.agree||0} checked out</span>${(c.common_false||0)+(c.common_true||0) ? `<span class="chip n">🧠 ${c.common_false||0} false · ${c.common_true||0} true by common sense</span>` : ''}<span class="chip y">🟡 ${c.no_source||0} no source</span>
       <span class="sumtxt">${r.sentences} sentences · ${r.drex_calls} Drex decisions · ${(r.total_ms/1000).toFixed(1)} s</span>
       <button class="mic small" id="fixall">✏️ Copy fixed version + citations</button>`;
     document.getElementById('fixall').onclick = e => copyText(fixedVersion(r.results), e.target);
-    const order = {contradict:0, no_source:1, agree:2, not_claim:3};
+    const order = {contradict:0, common_false:1, no_source:2, agree:3, common_true:4, not_claim:5};
     r.results.map((x,i)=>({...x,i})).sort((a,b)=>order[a.status]-order[b.status] || a.i-b.i).forEach(x => {
       const el = document.createElement('div'); el.className = 'claim ' + x.status;
       const d = x.doc;
@@ -558,7 +563,8 @@ function fixedVersion(results){
   const lines = results.map(x => {
     if (x.status === 'contradict' && x.fix) return `${x.fix} [${refNo(x.cite)}]`;
     if (x.status === 'agree' && x.cite) return `${x.sentence} [${refNo(x.cite)}]`;
-    if (x.status === 'no_source') return `${x.sentence} [citation needed]`;
+    if (x.status === 'no_source' || x.status === 'common_true') return `${x.sentence} [citation needed]`;
+    if (x.status === 'common_false') return `${x.sentence} [likely false: check]`;
     return x.sentence;
   });
   return lines.join('\n') + (refs.length ? '\n\nReferences\n' + refs.map((c, i) => `[${i + 1}] ${c}`).join('\n') : '');
